@@ -87,11 +87,7 @@ export function useSupabaseData(user: User | null) {
 
 async function getPersonalizedSongs(userId: string, currentSong: Song) {
   // 1. Fetch all songs
-  const { data: songs, error: songsError } = await supabase.from('songs').select('*');
-  if (songsError) {
-    console.error('Error fetching songs for personalization:', songsError);
-    return [];
-  }
+  const { data: songs } = await supabase.from('songs').select('*');
   if (!songs) return [];
 
   // 2. Fetch listening history
@@ -100,19 +96,9 @@ async function getPersonalizedSongs(userId: string, currentSong: Song) {
     .select('*')
     .eq('user_id', userId);
   const historyMap = new Map(history?.map((h) => [h.song_id, h.minutes_listened]));
-  
-  // 3. Fetch played songs to exclude them
-  const { data: playedSongsData } = await supabase
-    .from('played_songs')
-    .select('song_id')
-    .eq('user_id', userId);
-  const playedSongIds = new Set(playedSongsData?.map(p => p.song_id) || []);
 
   const recommendations = songs
-    .filter((song) => 
-      song.file_id !== currentSong.file_id && // exclude current song
-      !playedSongIds.has(song.file_id) // exclude already played songs
-    )
+    .filter((song) => song.file_id !== currentSong.file_id) // exclude current song
     .map((song) => {
       let score = 0;
 
@@ -140,11 +126,11 @@ async function getPersonalizedSongs(userId: string, currentSong: Song) {
       return { song, score };
     });
 
-  // 4. Sort and return top 5
+  // 3. Sort and return top 5
   const top5 = recommendations
     .sort((a, b) => b.score - a.score)
     .slice(0, 5)
-    .map((entry) => convertDatabaseSong(entry.song, false)); // Convert to UI format
+    .map((entry) => entry.song);
 
   console.log('🎵 Personalized Top 5 Songs:', top5);
   return top5;
@@ -451,15 +437,6 @@ setSongs(prevSongs =>
         } else {
           console.log(`✅ History updated: +${minutes} mins for song ${currentSongRef.current}`);
         }
-        
-        // Also add to played songs
-        await supabase
-          .from('played_songs')
-          .upsert({
-            user_id: user.id,
-            song_id: parseInt(currentSongRef.current),
-            played_at: new Date().toISOString()
-          });
       } catch (error) {
         console.error('Error recording previous song history:', error);
       }
@@ -501,15 +478,6 @@ try {
     } else {
       console.log(`🛑 History updated on stop: +${minutes} mins for song ${currentSongRef.current}`);
     }
-    
-    // Also add to played songs
-    await supabase
-      .from('played_songs')
-      .upsert({
-        user_id: user.id,
-        song_id: parseInt(currentSongRef.current),
-        played_at: new Date().toISOString()
-      });
   } catch (error) {
     console.error('Error recording final song history:', error);
   }

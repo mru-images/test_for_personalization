@@ -3,12 +3,7 @@ import { ChevronDown, MoreHorizontal, Heart, Share2, Play, Pause, SkipBack, Skip
 import { Song } from '@/types';
 import { useTheme } from '@/components/ThemeContext';
 import QueueSection from './QueueSection';
-
-interface QueueItem {
-  id: string;
-  song: Song;
-  addedAt: Date;
-}
+import { QueueItem } from '@/hooks/useQueue';
 
 interface MaximizedPlayerProps {
   song: Song;
