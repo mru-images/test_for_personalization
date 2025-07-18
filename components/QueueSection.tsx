@@ -1,7 +1,13 @@
 import React from 'react';
 import { X, GripVertical, Music } from 'lucide-react';
-import { QueueItem } from '@/hooks/useQueue';
 import { useTheme } from '@/components/ThemeContext';
+import { Song } from '@/types';
+
+interface QueueItem {
+  id: string;
+  song: Song;
+  addedAt: Date;
+}
 
 interface QueueSectionProps {
   queue: QueueItem[];

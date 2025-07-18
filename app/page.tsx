@@ -1,4 +1,4 @@
- 'use client'
+'use client'
 
 import React, { useState, createContext, useContext, useEffect,useRef } from 'react';
 import { Home as HomeIcon, Search, Settings } from 'lucide-react';
@@ -15,6 +15,7 @@ import AuthWrapper from '@/components/AuthWrapper';
 import { useAuth } from '@/hooks/useAuth';
 import { useSupabaseData } from '@/hooks/useSupabaseData';
 import { useQueue } from '@/hooks/useQueue';
+import { useDynamicPlaylist } from '@/hooks/useDynamicPlaylist';
 import { Song } from '@/types';
 import { useTheme } from '@/components/ThemeContext';
 import {Toaster,toast} from 'react-hot-toast';
@@ -43,10 +44,22 @@ function MusicPlayerContent() {
     queue,
     addToQueue,
     removeFromQueue,
-    getNextSongFromQueue,
     clearQueue,
     hasQueue
   } = useQueue();
+  
+  const {
+    initializePlaylist,
+    getCurrentSong: getDynamicCurrentSong,
+    moveToNext: moveToNextInPlaylist,
+    moveToPrevious: moveToPreviousInPlaylist,
+    addUserSelectedSong,
+    getUpcomingSongs,
+    resetPlaylist,
+    hasNext,
+    hasPrevious,
+    isInitialized
+  } = useDynamicPlaylist();
 
   const [activeTab, setActiveTab] = useState<'home' | 'search' | 'settings'>('home');
   const [currentPage, setCurrentPage] = useState<'main' | 'playlists' | 'liked'>('main');
@@ -69,8 +82,7 @@ function MusicPlayerContent() {
   const [isSeeking, setIsSeeking] = useState(false);
   const [pendingSeekTime, setPendingSeekTime] = useState<number | null>(null);
   const [isExternallySeeking, setIsExternallySeeking] = useState(false);
-  const [recommendedQueue, setRecommendedQueue] = useState<Song[]>([])
-  const [playedSongs, setPlayedSongs] = useState<Set<string>>(new Set())  
+  const [usingDynamicPlaylist, setUsingDynamicPlaylist] = useState(false);
 
 const loadMoreSongs = () => {
   setDisplayCount(prev => prev + 15);
@@ -93,15 +105,22 @@ useEffect(() => {
 }, [currentSong?.file_id]);
 
 useEffect(() => {
-    const fetchRecommendations = async () => {
-      if (user && currentSong) {
-        const recommendations = await getPersonalizedSongs(user.id, currentSong)
-        console.log('🎧 Updated Recommendations:', recommendations)
-      }
-    }
+  // Initialize dynamic playlist when data is loaded
+  if (user && lastPlayedSong && !isInitialized && !lastPlayedSongDismissed) {
+    initializePlaylist(lastPlayedSong, getPersonalizedSongs, user.id);
+    setUsingDynamicPlaylist(true);
+  }
+}, [user, lastPlayedSong, isInitialized, lastPlayedSongDismissed, initializePlaylist, getPersonalizedSongs]);
 
-    fetchRecommendations()
-  }, [user, currentSong])
+// Update current song from dynamic playlist
+useEffect(() => {
+  if (usingDynamicPlaylist && isInitialized) {
+    const dynamicCurrentSong = getDynamicCurrentSong();
+    if (dynamicCurrentSong && (!currentSong || currentSong.id !== dynamicCurrentSong.id)) {
+      setCurrentSong(dynamicCurrentSong);
+    }
+  }
+}, [usingDynamicPlaylist, isInitialized, getDynamicCurrentSong, currentSong]);
 
 useEffect(() => {
   if (audioRef.current) {
@@ -194,16 +213,15 @@ useEffect(() => {
 
 
   const handleSongPlay = (song: Song) => {
+    if (usingDynamicPlaylist) {
+      // Add user-selected song to dynamic playlist
+      addUserSelectedSong(song);
+    }
     setCurrentSong(song);
     setIsPlaying(true);
     setLastPlayedSongDismissed(false); // Reset dismissal when user actively plays a song
     // Record listening history and update last song
     recordListeningHistory(song.id);
-    setPlayedSongs((prev) => {
-        const updated = new Set(prev)
-        updated.add(String(song.file_id)) // ✅ convert to string
-        return updated
-      });
   };
 
   const handleAddToQueue = (song: Song) => {
@@ -225,6 +243,8 @@ useEffect(() => {
     setCurrentSong(null);
     setIsPlaying(false);
     setIsPlayerMaximized(false);
+    setUsingDynamicPlaylist(false);
+    resetPlaylist();
     
     // Mark last played song as dismissed so it won't auto-load again
     setLastPlayedSongDismissed(true);
@@ -240,23 +260,41 @@ useEffect(() => {
   };
 
   const handlePrevious = () => {
-  if (!currentSong) return;
+    if (!currentSong) return;
 
-  const currentIndex = songs.findIndex(song => song.id === currentSong.id);
-  const prevIndex = currentIndex > 0 ? currentIndex - 1 : songs.length - 1;
-  const prevSong = songs[prevIndex];
+    if (usingDynamicPlaylist && hasPrevious) {
+      const prevSong = moveToPreviousInPlaylist();
+      if (prevSong) {
+        setCurrentSong(prevSong);
+        setIsPlaying(true);
+        setLastPlayedSongDismissed(false);
+        recordListeningHistory(prevSong.id);
+        
+        // Preload image
+        if (!imageUrls[prevSong.img_id]) {
+          const newUrl = `/api/image-proxy?fileid=${prevSong.img_id}`;
+          setImageUrls(prev => ({ ...prev, [prevSong.img_id]: newUrl }));
+        }
+      }
+      return;
+    }
 
-  setCurrentSong(prevSong);
-  setIsPlaying(true);
-  setLastPlayedSongDismissed(false);
-  recordListeningHistory(prevSong.id);
+    // Fallback to regular song list navigation
+    const currentIndex = songs.findIndex(song => song.id === currentSong.id);
+    const prevIndex = currentIndex > 0 ? currentIndex - 1 : songs.length - 1;
+    const prevSong = songs[prevIndex];
 
-  // Preload image
-  if (!imageUrls[prevSong.img_id]) {
-    const newUrl = `/api/image-proxy?fileid=${prevSong.img_id}`;
-    setImageUrls(prev => ({ ...prev, [prevSong.img_id]: newUrl }));
-  }
-};
+    setCurrentSong(prevSong);
+    setIsPlaying(true);
+    setLastPlayedSongDismissed(false);
+    recordListeningHistory(prevSong.id);
+
+    // Preload image
+    if (!imageUrls[prevSong.img_id]) {
+      const newUrl = `/api/image-proxy?fileid=${prevSong.img_id}`;
+      setImageUrls(prev => ({ ...prev, [prevSong.img_id]: newUrl }));
+    }
+  };
 useEffect(() => {
   if (!currentSong) return;
 
@@ -304,41 +342,62 @@ const handleLoadedMetadata = async () => {
 
 
 
-const handleNext = () => {
-  if (!currentSong) return;
+  const handleNext = async () => {
+    if (!currentSong) return;
 
-  // Check if there's a song in the queue first
-  const nextQueueSong = getNextSongFromQueue();
-  if (nextQueueSong) {
-    setCurrentSong(nextQueueSong);
+    // Priority 1: Check manual queue first
+    if (hasQueue) {
+      const nextQueueSong = queue[0];
+      if (nextQueueSong) {
+        removeFromQueue(nextQueueSong.id);
+        setCurrentSong(nextQueueSong.song);
+        setIsPlaying(true);
+        setLastPlayedSongDismissed(false);
+        recordListeningHistory(nextQueueSong.song.id);
+        
+        // Preload image
+        if (!imageUrls[nextQueueSong.song.img_id]) {
+          const newUrl = `/api/image-proxy?fileid=${nextQueueSong.song.img_id}`;
+          setImageUrls(prev => ({ ...prev, [nextQueueSong.song.img_id]: newUrl }));
+        }
+        return;
+      }
+    }
+
+    // Priority 2: Use dynamic playlist if available
+    if (usingDynamicPlaylist && hasNext) {
+      const nextSong = await moveToNextInPlaylist();
+      if (nextSong) {
+        setCurrentSong(nextSong);
+        setIsPlaying(true);
+        setLastPlayedSongDismissed(false);
+        recordListeningHistory(nextSong.id);
+        
+        // Preload image
+        if (!imageUrls[nextSong.img_id]) {
+          const newUrl = `/api/image-proxy?fileid=${nextSong.img_id}`;
+          setImageUrls(prev => ({ ...prev, [nextSong.img_id]: newUrl }));
+        }
+        return;
+      }
+    }
+
+    // Priority 3: Fallback to regular song list navigation
+    const currentIndex = songs.findIndex(song => song.id === currentSong.id);
+    const nextIndex = currentIndex < songs.length - 1 ? currentIndex + 1 : 0;
+    const nextSong = songs[nextIndex];
+
+    setCurrentSong(nextSong);
     setIsPlaying(true);
     setLastPlayedSongDismissed(false);
-    recordListeningHistory(nextQueueSong.id);
-    
-    // Preload image
-    if (!imageUrls[nextQueueSong.img_id]) {
-      const newUrl = `/api/image-proxy?fileid=${nextQueueSong.img_id}`;
-      setImageUrls(prev => ({ ...prev, [nextQueueSong.img_id]: newUrl }));
+    recordListeningHistory(nextSong.id);
+
+    // Preload image in background
+    if (!imageUrls[nextSong.img_id]) {
+      const newUrl = `/api/image-proxy?fileid=${nextSong.img_id}`;
+      setImageUrls(prev => ({ ...prev, [nextSong.img_id]: newUrl }));
     }
-    return;
-  }
-
-  // If no queue, proceed with normal next song logic
-  const currentIndex = songs.findIndex(song => song.id === currentSong.id);
-  const nextIndex = currentIndex < songs.length - 1 ? currentIndex + 1 : 0;
-  const nextSong = songs[nextIndex];
-
-  setCurrentSong(nextSong);
-  setIsPlaying(true);
-  setLastPlayedSongDismissed(false);
-  recordListeningHistory(nextSong.id);
-
-  // Preload image in background
-  if (!imageUrls[nextSong.img_id]) {
-    const newUrl = `/api/image-proxy?fileid=${nextSong.img_id}`;
-    setImageUrls(prev => ({ ...prev, [nextSong.img_id]: newUrl }));
-  }
-};
+  };
 
 
 
@@ -358,25 +417,9 @@ const handleNext = () => {
   };
 
   const handleSongEnd = async () => {
-  if (recommendedQueue.length > 0) {
-    const next = recommendedQueue[0];
-    setRecommendedQueue((prev) => prev.slice(1));
-    handleSongPlay(next);
-  } else {
-    if (currentSong && user) {
-      const newRecs = await getPersonalizedSongs(user.id, currentSong);
-      const filtered = newRecs.filter(
-        (s) => !playedSongs.has(s.file_id)
-      );
-      const nextQueue = filtered.slice(0, 5);
-
-      if (nextQueue.length > 0) {
-        setRecommendedQueue(nextQueue.slice(1));
-        handleSongPlay(nextQueue[0]);
-      }
-    }
-  }
-};
+    // Automatically move to next song when current song ends
+    await handleNext();
+  };
 
   const renderContent = () => {
     if (currentPage === 'playlists') {
@@ -535,7 +578,11 @@ const setCurrentTimeState = setCurrentTime;
                 setVolume={setVolume}
                 isSeeking={isSeeking}
                 setIsSeeking={setIsSeeking}
-                queue={queue}
+                queue={usingDynamicPlaylist ? getUpcomingSongs().map(song => ({
+                  id: `${song.id}-upcoming`,
+                  song,
+                  addedAt: new Date()
+                })) : queue}
                 onRemoveFromQueue={removeFromQueue}
                 onSongPlay={handleSongPlay}
                 imageUrls={imageUrls}
